@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Activity, Bell, Camera, Check, CheckCheck, Compass, Heart, Home, Image as ImageIcon,
+  Activity, Bell, Bookmark, Camera, Check, CheckCheck, Compass, Heart, Home, Image as ImageIcon,
   LogOut, MessageCircle, MoreHorizontal, Plus, Search, Send, Shield, ShieldAlert,
-  Sparkles, UserPlus, Users, X, Zap
+  Sparkles, UserPlus, Users, X, Zap, Moon, Sun, BarChart3, Hash
 } from 'lucide-react';
 import { supabase, supabaseReady } from './supabase';
 
@@ -97,6 +97,12 @@ function App() {
   const [notifications, setNotifications] = useState([]);
   const [unread, setUnread] = useState(0);
   const [notificationFilter, setNotificationFilter] = useState('all');
+  const [savedPostIds, setSavedPostIds] = useState([]);
+  const [darkMode, setDarkMode] = useState(() => { try { return localStorage.getItem('raanbaai-theme') === 'dark'; } catch { return false; } });
+  const [pollMode, setPollMode] = useState(false);
+  const [pollQuestion, setPollQuestion] = useState('');
+  const [pollOptions, setPollOptions] = useState(['', '']);
+  const [activeHashtag, setActiveHashtag] = useState('');
   const [searchText, setSearchText] = useState('');
   const [postText, setPostText] = useState('');
   const [postFile, setPostFile] = useState(null);
@@ -122,6 +128,10 @@ function App() {
     if (e) throw e;
     return data;
   }, []);
+
+  useEffect(() => {
+    try { localStorage.setItem('raanbaai-theme', darkMode ? 'dark' : 'light'); } catch {}
+  }, [darkMode]);
 
   useEffect(() => {
     if (!supabase) return;
@@ -150,16 +160,27 @@ function App() {
     try {
       const posts = await run(supabase.from('posts').select('*, profiles!posts_user_id_fkey(id, username, display_name, avatar_url)').order('created_at', { ascending: false }).limit(50));
       const ids = posts.map(p => p.id);
-      let likes = [], comments = [];
+      let likes = [], comments = [], reactions = [], polls = [], options = [], votes = [], bookmarks = [];
       if (ids.length) {
         likes = await run(supabase.from('likes').select('post_id,user_id').in('post_id', ids));
         comments = await run(supabase.from('comments').select('id,post_id,body,user_id,created_at,profiles(username,display_name,avatar_url)').in('post_id', ids).order('created_at', { ascending: true }));
+        reactions = await run(supabase.from('post_reactions').select('post_id,user_id,reaction').in('post_id', ids));
+        polls = await run(supabase.from('polls').select('id,post_id,question').in('post_id', ids));
+        const pollIds = polls.map(p => p.id);
+        if (pollIds.length) {
+          options = await run(supabase.from('poll_options').select('id,poll_id,label').in('poll_id', pollIds).order('created_at', { ascending: true }));
+          votes = await run(supabase.from('poll_votes').select('poll_id,option_id,user_id').in('poll_id', pollIds));
+        }
+        bookmarks = await run(supabase.from('bookmarks').select('post_id').eq('user_id', session.user.id).in('post_id', ids));
       }
+      setSavedPostIds(bookmarks.map(b => b.post_id));
       const blocked = await run(supabase.from('blocks').select('blocker_id,blocked_id').or(`blocker_id.eq.${session.user.id},blocked_id.eq.${session.user.id}`));
       const blockedIds = new Set(blocked.map(b => b.blocker_id === session.user.id ? b.blocked_id : b.blocker_id));
-      setFeed(posts.filter(p => !blockedIds.has(p.user_id)).map(p => ({
-        ...p, likes: likes.filter(l => l.post_id === p.id), comments: comments.filter(c => c.post_id === p.id)
-      })));
+      setFeed(posts.filter(p => !blockedIds.has(p.user_id)).map(p => {
+        const poll = polls.find(x => x.post_id === p.id);
+        return { ...p, likes: likes.filter(l => l.post_id === p.id), comments: comments.filter(c => c.post_id === p.id),
+          reactions: reactions.filter(r => r.post_id === p.id), poll: poll ? { ...poll, options: options.filter(o => o.poll_id === poll.id).map(o => ({ ...o, votes: votes.filter(v => v.option_id === o.id) })), votes: votes.filter(v => v.poll_id === poll.id) } : null };
+      }));
     } catch (e) { setError(errText(e)); }
   }, [session, run]);
 
@@ -241,12 +262,20 @@ function App() {
   };
 
   const createPost = async e => {
-    e.preventDefault(); if (!postText.trim() && !postFile) return;
+    e.preventDefault();
+    const validOptions = pollOptions.map(x => x.trim()).filter(Boolean);
+    if (!postText.trim() && !postFile && !(pollMode && pollQuestion.trim())) return;
+    if (pollMode && (!pollQuestion.trim() || validOptions.length < 2)) return setError('A poll needs a question and at least two options.');
     setBusy(true); setError('');
     try {
       const image_url = await upload(postFile, 'posts');
-      await run(supabase.from('posts').insert({ user_id: session.user.id, body: postText.trim(), image_url }));
-      setPostText(''); setPostFile(null); e.target.reset(); await loadFeed(); notify('Your post is live.');
+      const body = postText.trim() || (pollMode ? pollQuestion.trim() : '');
+      const created = await run(supabase.from('posts').insert({ user_id: session.user.id, body, image_url }).select('id').single());
+      if (pollMode) {
+        const poll = await run(supabase.from('polls').insert({ post_id: created.id, question: pollQuestion.trim() }).select('id').single());
+        await run(supabase.from('poll_options').insert(validOptions.map(label => ({ poll_id: poll.id, label }))));
+      }
+      setPostText(''); setPostFile(null); setPollMode(false); setPollQuestion(''); setPollOptions(['', '']); e.target.reset(); await loadFeed(); notify(pollMode ? 'Your poll is live.' : 'Your post is live.');
     } catch (e) { setError(errText(e)); }
     finally { setBusy(false); }
   };
@@ -268,6 +297,32 @@ function App() {
       if (liked) await run(supabase.from('likes').delete().eq('post_id', post.id).eq('user_id', session.user.id));
       else await run(supabase.from('likes').insert({ post_id: post.id, user_id: session.user.id }));
       await loadFeed();
+    } catch (e) { setError(errText(e)); }
+  };
+
+  const toggleBookmark = async post => {
+    try {
+      const saved = savedPostIds.includes(post.id);
+      if (saved) await run(supabase.from('bookmarks').delete().eq('post_id', post.id).eq('user_id', session.user.id));
+      else await run(supabase.from('bookmarks').insert({ post_id: post.id, user_id: session.user.id }));
+      setSavedPostIds(old => saved ? old.filter(id => id !== post.id) : [...old, post.id]);
+      notify(saved ? 'Bookmark removed.' : 'Post saved to bookmarks.');
+    } catch (e) { setError(errText(e)); }
+  };
+
+  const toggleReaction = async (post, reaction) => {
+    try {
+      const existing = post.reactions?.find(r => r.user_id === session.user.id);
+      if (existing?.reaction === reaction) await run(supabase.from('post_reactions').delete().eq('post_id', post.id).eq('user_id', session.user.id));
+      else await run(supabase.from('post_reactions').upsert({ post_id: post.id, user_id: session.user.id, reaction }, { onConflict: 'post_id,user_id' }));
+      await loadFeed();
+    } catch (e) { setError(errText(e)); }
+  };
+
+  const votePoll = async (poll, optionId) => {
+    try {
+      await run(supabase.from('poll_votes').upsert({ poll_id: poll.id, option_id: optionId, user_id: session.user.id }, { onConflict: 'poll_id,user_id' }));
+      await loadFeed(); notify('Your vote has been recorded.');
     } catch (e) { setError(errText(e)); }
   };
 
@@ -414,11 +469,11 @@ function App() {
 
   const navItems = [
     { name: 'Home', icon: Home }, { name: 'Explore', icon: Compass }, { name: 'Messages', icon: MessageCircle },
-    { name: 'Notifications', icon: Bell, count: unread }, { name: 'Friends', icon: Users }, { name: 'Profile', icon: Activity },
+    { name: 'Notifications', icon: Bell, count: unread }, { name: 'Saved', icon: Bookmark }, { name: 'Friends', icon: Users }, { name: 'Profile', icon: Activity },
     ...(isAdmin ? [{ name: 'Admin', icon: ShieldAlert }] : [])
   ];
 
-  return <div className="app-shell">
+  return <div className={`app-shell ${darkMode ? 'theme-dark' : 'theme-light'}`} data-theme={darkMode ? 'dark' : 'light'}>
     <aside className="sidebar">
       <button className="brand brand-button" onClick={() => setTab('Home')}><span className="brand-mark"><Zap size={20} fill="currentColor"/></span> Raanbaai<span className="brand-dot">.</span></button>
       <div className="side-label">MENU</div>
@@ -434,7 +489,7 @@ function App() {
     </aside>
 
     <main className="main-area">
-      <header className="topbar"><div><span className="eyebrow">YOUR COMMUNITY</span><h1>{tab === 'Home' ? 'Your feed' : tab}</h1></div><div className="topbar-actions"><button className="icon-btn" title="Notifications" onClick={() => setTab('Notifications')}><Bell size={19}/>{unread > 0 && <i/>}</button><button className="top-profile" onClick={() => setTab('Profile')}><Avatar profile={profile} size="sm"/></button></div></header>
+      <header className="topbar"><div><span className="eyebrow">YOUR COMMUNITY</span><h1>{tab === 'Home' ? 'Your feed' : tab}</h1></div><div className="topbar-actions"><button className="icon-btn" title={darkMode ? "Switch to light mode" : "Switch to dark mode"} onClick={() => setDarkMode(v => !v)}>{darkMode ? <Sun size={19}/> : <Moon size={19}/>}</button><button className="icon-btn" title="Notifications" onClick={() => setTab('Notifications')}><Bell size={19}/>{unread > 0 && <i/>}</button><button className="top-profile" onClick={() => setTab('Profile')}><Avatar profile={profile} size="sm"/></button></div></header>
       {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError('')}><X size={16}/></button></div>}
 
       {tab === 'Home' && <div className="content-grid">
@@ -451,11 +506,13 @@ function App() {
           <form className="composer card" onSubmit={createPost}>
             <div className="composer-top"><Avatar profile={profile}/><textarea rows="2" maxLength="3000" value={postText} onChange={e => setPostText(e.target.value)} placeholder="What would you like to share?"/></div>
             {postFile && <div className="selected-file"><ImageIcon size={16}/>{postFile.name}<button type="button" onClick={() => setPostFile(null)}><X size={14}/></button></div>}
-            <div className="composer-bottom"><label className="attach-btn"><Camera size={17}/> Photo<input type="file" accept="image/*" onChange={e => setPostFile(e.target.files?.[0] || null)}/></label><span className="muted tiny">{postText.length}/3000</span><button className="btn btn-primary btn-small" disabled={busy || (!postText.trim() && !postFile)}><Send size={14}/> {busy ? 'Posting…' : 'Share post'}</button></div>
+            {pollMode && <div className="poll-composer"><label>Poll question<input value={pollQuestion} onChange={e => setPollQuestion(e.target.value)} maxLength="240" placeholder="Ask your community a question"/></label>{pollOptions.map((option, i) => <input key={i} value={option} maxLength="120" onChange={e => setPollOptions(old => old.map((x, j) => j === i ? e.target.value : x))} placeholder={`Option ${i + 1}`}/>)}<div className="poll-composer-actions"><button type="button" className="text-btn" disabled={pollOptions.length >= 6} onClick={() => setPollOptions(old => [...old, ''])}>+ Add option</button><button type="button" className="text-btn" onClick={() => { setPollMode(false); setPollQuestion(''); setPollOptions(['', '']); }}>Cancel poll</button></div></div>}
+            <div className="composer-bottom"><label className="attach-btn"><Camera size={17}/> Photo<input type="file" accept="image/*" onChange={e => setPostFile(e.target.files?.[0] || null)}/></label><button type="button" className={`attach-btn ${pollMode ? 'active' : ''}`} onClick={() => setPollMode(v => !v)}><BarChart3 size={17}/> Poll</button><span className="muted tiny">{postText.length}/3000</span><button className="btn btn-primary btn-small" disabled={busy || (!postText.trim() && !postFile && !(pollMode && pollQuestion.trim()))}><Send size={14}/> {busy ? 'Posting…' : 'Share post'}</button></div>
           </form>
+          {activeHashtag && <div className="hashtag-active">Showing #{activeHashtag} <button onClick={() => setActiveHashtag('')}>Clear filter ×</button></div>}
           <div className="feed-list">
             {feed.length === 0 && <div className="empty-state card"><div className="empty-icon"><MessageCircle size={24}/></div><h3>Your feed starts here</h3><p>Share your first post or find people to follow.</p><button className="btn btn-primary" onClick={() => setTab('Explore')}>Explore people</button></div>}
-            {feed.map(post => <PostCard key={post.id} post={post} userId={session.user.id} onLike={() => toggleLike(post)} onComment={addComment} onReport={() => report('post', post.id, post.user_id)} onDelete={() => deletePost(post.id)} onProfile={() => { setSearchText(post.profiles?.username || ''); setTab('Explore'); }}/>)}
+            {feed.filter(post => !activeHashtag || new RegExp(`(^|\\s)#${activeHashtag}\\b`, 'i').test(post.body || '')).map(post => <PostCard key={post.id} post={post} userId={session.user.id} saved={savedPostIds.includes(post.id)} onBookmark={() => toggleBookmark(post)} onReaction={reaction => toggleReaction(post, reaction)} onVote={optionId => votePoll(post.poll, optionId)} onHashtag={tag => { setActiveHashtag(tag); setTab('Home'); }} onLike={() => toggleLike(post)} onComment={addComment} onReport={() => report('post', post.id, post.user_id)} onDelete={() => deletePost(post.id)} onProfile={() => { setSearchText(post.profiles?.username || ''); setTab('Explore'); }}/>) }
           </div>
         </section>
         <aside className="right-column">
@@ -476,6 +533,8 @@ function App() {
       </section>}
 
       {tab === 'Friends' && <section className="page-content"><div className="section-heading page-heading"><div><h2>Friend requests</h2><p>Say yes to a new connection.</p></div><span className="soft-tag">{requests.length} PENDING</span></div><div className="request-list">{requests.map(r => <div className="request-card card" key={r.id}><Avatar profile={r.sender}/><div className="request-person"><b>{r.sender?.display_name}</b><small>@{r.sender?.username} · {since(r.created_at)}</small></div><button className="btn btn-primary btn-small" onClick={() => respondRequest(r, 'accepted')}><Check size={14}/> Accept</button><button className="btn btn-soft btn-small" onClick={() => respondRequest(r, 'declined')}>Decline</button></div>)}</div>{!requests.length && <div className="empty-state card"><div className="empty-icon"><Users size={24}/></div><h3>All caught up</h3><p>Friend requests you receive will appear here.</p><button className="btn btn-primary" onClick={() => setTab('Explore')}>Find people</button></div>}</section>}
+
+      {tab === 'Saved' && <section className="page-content"><div className="section-heading page-heading"><div><h2>Saved posts</h2><p>Posts you bookmarked for later.</p></div><span className="soft-tag">{feed.filter(p => savedPostIds.includes(p.id)).length} SAVED</span></div><div className="feed-list">{feed.filter(p => savedPostIds.includes(p.id)).map(post => <PostCard key={post.id} post={post} userId={session.user.id} saved onBookmark={() => toggleBookmark(post)} onReaction={reaction => toggleReaction(post, reaction)} onVote={optionId => votePoll(post.poll, optionId)} onHashtag={tag => { setActiveHashtag(tag); setTab('Home'); }} onLike={() => toggleLike(post)} onComment={addComment} onReport={() => report('post', post.id, post.user_id)} onDelete={() => deletePost(post.id)}/>)}{!feed.some(p => savedPostIds.includes(p.id)) && <div className="empty-state card"><div className="empty-icon"><Bookmark size={24}/></div><h3>No saved posts yet</h3><p>Use the bookmark icon on any post to save it here.</p><button className="btn btn-primary" onClick={() => setTab('Home')}>Browse feed</button></div>}</div></section>}
 
       {tab === 'Notifications' && <section className="page-content">
         <div className="section-heading page-heading">
@@ -522,7 +581,7 @@ function App() {
 
       {tab === 'Profile' && <section className="page-content profile-page"><div className="profile-cover"><span>✳</span><button className="btn btn-outline btn-small" onClick={() => setEditProfile(!editProfile)}>{editProfile ? 'Cancel edit' : 'Edit profile'}</button></div><div className="profile-detail card"><Avatar profile={profile} size="xl"/><div className="profile-names"><h2>{profile?.display_name}</h2><p>@{profile?.username}</p><span>{profile?.bio || 'A new chapter on Raanbaai.'}</span></div><div className="profile-badge"><Sparkles size={15}/> Raanbaai MEMBER</div></div>
         {editProfile && <form className="card profile-edit stack-form" onSubmit={saveProfile}><h3>Edit your profile</h3><label>Display name<input value={editName} onChange={e => setEditName(e.target.value)} maxLength="60" required/></label><label>Bio<textarea value={editBio} onChange={e => setEditBio(e.target.value)} rows="3" maxLength="240" placeholder="A little about you…"/></label><label>Profile photo<input type="file" accept="image/*" onChange={e => setAvatarFile(e.target.files?.[0] || null)}/></label><button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save profile'}</button></form>}
-        <div className="section-heading page-heading"><div><h2>Your posts</h2><p>Things you've shared with the community.</p></div></div><div className="feed-list">{feed.filter(p => p.user_id === session.user.id).map(post => <PostCard key={post.id} post={post} userId={session.user.id} onLike={() => toggleLike(post)} onComment={addComment} onReport={() => report('post', post.id, post.user_id)} onDelete={() => deletePost(post.id)}/>)}{!feed.some(p => p.user_id === session.user.id) && <div className="empty-state card"><h3>Your story begins with a post</h3><p>Share something with your community.</p><button className="btn btn-primary" onClick={() => setTab('Home')}>Create a post</button></div>}</div>
+        <div className="section-heading page-heading"><div><h2>Your posts</h2><p>Things you've shared with the community.</p></div></div><div className="feed-list">{feed.filter(p => p.user_id === session.user.id).map(post => <PostCard key={post.id} post={post} userId={session.user.id} saved={savedPostIds.includes(post.id)} onBookmark={() => toggleBookmark(post)} onReaction={reaction => toggleReaction(post, reaction)} onVote={optionId => votePoll(post.poll, optionId)} onHashtag={tag => { setActiveHashtag(tag); setTab('Home'); }} onLike={() => toggleLike(post)} onComment={addComment} onReport={() => report('post', post.id, post.user_id)} onDelete={() => deletePost(post.id)}/>)}{!feed.some(p => p.user_id === session.user.id) && <div className="empty-state card"><h3>Your story begins with a post</h3><p>Share something with your community.</p><button className="btn btn-primary" onClick={() => setTab('Home')}>Create a post</button></div>}</div>
       </section>}
 
       {tab === 'Admin' && isAdmin && <section className="page-content"><div className="section-heading page-heading"><div><h2>Community moderation</h2><p>Review reports and keep Raanbaai welcoming.</p></div><span className="soft-tag"><Shield size={13}/> ADMIN</span></div><div className="admin-notice"><ShieldAlert size={18}/><span>Admin actions are protected by database policies. Review each report before taking action.</span></div><div className="admin-list card">{reports.map(r => <div className="report-row" key={r.id}><div className="report-top"><span className={`report-status ${r.status}`}>{r.status}</span><small>{since(r.created_at)} ago</small></div><h3>{r.target_type === 'post' ? 'Reported post' : 'Reported user'} {r.target_user?.username ? `· @${r.target_user.username}` : ''}</h3><p>{r.reason}</p><small>Reported by @{r.reporter?.username || 'unknown'}</small>{r.status === 'pending' && <div className="report-actions"><button className="btn btn-primary btn-small" onClick={() => resolveReport(r.id, 'resolved')}><Check size={14}/> Resolve</button><button className="btn btn-soft btn-small" onClick={() => resolveReport(r.id, 'dismissed')}>Dismiss</button>{r.target_type === 'post' && <button className="btn btn-danger btn-small" onClick={() => deletePost(r.target_id)}>Delete post</button>}</div>}</div>)}{!reports.length && <div className="empty-state"><Shield size={26}/><h3>No reports to review</h3><p>New reports will appear here.</p><button className="btn btn-outline btn-small" onClick={loadReports}>Refresh reports</button></div>}</div></section>}
@@ -541,17 +600,25 @@ function PersonRow({ person, onFollow, onPoke, onMessage, compact }) {
   return <div className={`person-row ${compact ? 'compact' : ''}`}><Avatar profile={person}/><div className="person-row-info"><b>{person.display_name}</b><small>@{person.username}</small></div><button className="icon-btn small" title={person.isFollowing ? 'Unfollow' : 'Follow'} onClick={onFollow}>{person.isFollowing ? <Check size={15}/> : <UserPlus size={15}/>}</button>{!compact && <button className="icon-btn small" title="Poke" onClick={onPoke}><Zap size={15}/></button>}</div>;
 }
 
-function PostCard({ post, userId, onLike, onComment, onReport, onDelete, onProfile }) {
+function PostCard({ post, userId, onLike, onComment, onReport, onDelete, onProfile, saved = false, onBookmark, onReaction, onVote, onHashtag }) {
   const [comment, setComment] = useState('');
   const [showComments, setShowComments] = useState(false);
+  const [showReactions, setShowReactions] = useState(false);
   const liked = post.likes?.some(l => l.user_id === userId);
+  const myReaction = post.reactions?.find(r => r.user_id === userId)?.reaction;
+  const myVote = post.poll?.votes?.find(v => v.user_id === userId)?.option_id;
   const submitComment = e => { e.preventDefault(); if (!comment.trim()) return; onComment(post.id, comment); setComment(''); setShowComments(true); };
+  const bodyParts = (post.body || '').split(/(#[A-Za-z0-9_]+)/g);
+  const reactionChoices = [{ key: 'love', emoji: '❤️', label: 'Love' }, { key: 'laugh', emoji: '😂', label: 'Laugh' }, { key: 'wow', emoji: '😮', label: 'Wow' }, { key: 'sad', emoji: '😢', label: 'Sad' }, { key: 'fire', emoji: '🔥', label: 'Fire' }];
+  const totalVotes = post.poll?.votes?.length || 0;
   return <article className="post-card card">
     <div className="post-head"><Avatar profile={post.profiles}/><button className="post-author" onClick={onProfile}><b>{post.profiles?.display_name || 'Raanbaai member'}</b><small>@{post.profiles?.username || 'member'} · {since(post.created_at)}</small></button><button className="icon-btn small post-more" title="Report post" onClick={onReport}><MoreHorizontal size={18}/></button>{post.user_id === userId && <button className="icon-btn small" title="Delete post" onClick={onDelete}><X size={16}/></button>}</div>
-    {post.body && <p className="post-body">{post.body}</p>}
+    {post.body && <p className="post-body">{bodyParts.map((part, i) => part.startsWith('#') ? <button type="button" className="hashtag-link" key={`${part}-${i}`} onClick={() => onHashtag?.(part.slice(1))}>{part}</button> : <React.Fragment key={i}>{part}</React.Fragment>)}</p>}
     {post.image_url && <img className="post-image" src={post.image_url} alt="Post attachment" loading="lazy"/>}
-    <div className="post-stats"><span><Heart size={14} fill={post.likes?.length ? 'currentColor' : 'none'}/>{post.likes?.length || 0} likes</span><button onClick={() => setShowComments(!showComments)}>{post.comments?.length || 0} comments</button></div>
-    <div className="post-actions"><button className={liked ? 'liked' : ''} onClick={onLike}><Heart size={18} fill={liked ? 'currentColor' : 'none'}/> Like</button><button onClick={() => setShowComments(!showComments)}><MessageCircle size={18}/> Comment</button><button onClick={() => navigator.clipboard?.writeText(window.location.href).catch(() => {})}><Activity size={17}/> Share</button></div>
+    {post.poll && <div className="poll-card"><h4><BarChart3 size={17}/> {post.poll.question}</h4>{post.poll.options.map(option => { const count = option.votes?.length || 0; const percent = totalVotes ? Math.round(count / totalVotes * 100) : 0; return <button key={option.id} className={`poll-option ${myVote === option.id ? 'selected' : ''}`} onClick={() => !myVote && onVote?.(option.id)} disabled={Boolean(myVote)}><span className="poll-option-label">{option.label}</span><span className="poll-option-result">{percent}% · {count}</span><i style={{ width: `${percent}%` }}/></button>; })}<small>{totalVotes} vote{totalVotes === 1 ? '' : 's'}{myVote ? ' · You voted' : ' · Select an option to vote'}</small></div>}
+    <div className="post-stats"><span><Heart size={14} fill={post.likes?.length ? 'currentColor' : 'none'}/>{post.likes?.length || 0} likes</span><span>{post.reactions?.length || 0} reactions</span><button onClick={() => setShowComments(!showComments)}>{post.comments?.length || 0} comments</button></div>
+    <div className="post-actions"><button className={liked ? 'liked' : ''} onClick={onLike}><Heart size={18} fill={liked ? 'currentColor' : 'none'}/> Like</button><button onClick={() => setShowReactions(v => !v)}><span>{myReaction ? reactionChoices.find(r => r.key === myReaction)?.emoji : '😊'}</span> React</button><button className={saved ? 'liked' : ''} onClick={onBookmark} title={saved ? 'Remove bookmark' : 'Save post'}><Bookmark size={18} fill={saved ? 'currentColor' : 'none'}/> {saved ? 'Saved' : 'Save'}</button><button onClick={() => setShowComments(!showComments)}><MessageCircle size={18}/> Comment</button><button onClick={() => navigator.clipboard?.writeText(window.location.href).catch(() => {})}><Activity size={17}/> Share</button></div>
+    {showReactions && <div className="reaction-picker">{reactionChoices.map(r => <button key={r.key} className={myReaction === r.key ? 'selected' : ''} title={r.label} onClick={() => { onReaction?.(r.key); setShowReactions(false); }}>{r.emoji} <small>{r.label}</small></button>)}</div>}
     {showComments && <div className="comments-area">{post.comments?.map(c => <div className="comment-row" key={c.id}><Avatar profile={c.profiles} size="sm"/><div><b>{c.profiles?.display_name || c.profiles?.username || 'Member'}</b><p>{c.body}</p><small>{since(c.created_at)} ago</small></div></div>)}<form className="comment-form" onSubmit={submitComment}><input value={comment} onChange={e => setComment(e.target.value)} placeholder="Write a comment…" maxLength="1000"/><button className="btn btn-primary btn-small" disabled={!comment.trim()}><Send size={14}/></button></form></div>}
   </article>;
 }
