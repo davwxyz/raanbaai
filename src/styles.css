@@ -238,3 +238,71 @@ textarea:focus-visible {
   }
 }
 
+/* Raanbaai notification improvements — red and white */
+.notification-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.notification-filters button {
+  border: 1px solid #eee0e0;
+  background: #fff;
+  color: #655b5b;
+  border-radius: 9px;
+  padding: 9px 13px;
+  font-size: 12px;
+  font-weight: 700;
+  transition: background .18s ease, color .18s ease;
+}
+
+.notification-filters button:hover,
+.notification-filters button.active {
+  background: #c62828;
+  color: #fff;
+  border-color: #c62828;
+}
+
+.notification-filters .notification-refresh { margin-left: auto; }
+.notification-row { transition: background .18s ease; }
+.notification-row.unread {
+  background: #fff5f5;
+  border-left: 3px solid #c62828;
+}
+
+.notification-copy.notification-open {
+  display: block;
+  text-align: left;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  min-width: 0;
+}
+
+.notification-copy.notification-open:hover p { color: #a71919; }
+.notification-read {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border: 1px solid #f0d5d5;
+  border-radius: 9px;
+  background: #fff;
+  color: #c62828;
+}
+.notification-read:hover { background: #c62828; color: #fff; }
+.notification-row .notification-icon {
+  background: #fff0f0;
+  color: #c62828;
+  flex-shrink: 0;
+}
+@media (max-width: 600px) {
+  .notification-row { gap: 9px; padding: 12px; }
+  .notification-filters .notification-refresh { margin-left: 0; }
+}
+
