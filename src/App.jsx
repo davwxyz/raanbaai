@@ -96,6 +96,7 @@ function App() {
   const [stories, setStories] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [unread, setUnread] = useState(0);
+  const [notificationFilter, setNotificationFilter] = useState('all');
   const [searchText, setSearchText] = useState('');
   const [postText, setPostText] = useState('');
   const [postFile, setPostFile] = useState(null);
@@ -309,9 +310,21 @@ function App() {
     catch (e) { setError(errText(e)); }
   };
 
+  const markNotificationRead = async notificationId => {
+    try {
+      await run(supabase.from('notifications').update({ read_at: new Date().toISOString() })
+        .eq('id', notificationId).eq('user_id', session.user.id).is('read_at', null));
+      await loadNotifications();
+    } catch (e) { setError(errText(e)); }
+  };
+
   const markNotificationsRead = async () => {
-    try { await run(supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('user_id', session.user.id).is('read_at', null)); await loadNotifications(); }
-    catch (e) { setError(errText(e)); }
+    try {
+      await run(supabase.from('notifications').update({ read_at: new Date().toISOString() })
+        .eq('user_id', session.user.id).is('read_at', null));
+      await loadNotifications();
+      notify('All notifications marked as read.');
+    } catch (e) { setError(errText(e)); }
   };
 
   const startChat = async person => {
@@ -410,7 +423,7 @@ function App() {
       <button className="brand brand-button" onClick={() => setTab('Home')}><span className="brand-mark"><Zap size={20} fill="currentColor"/></span> Raanbaai<span className="brand-dot">.</span></button>
       <div className="side-label">MENU</div>
       <nav className="main-nav">
-        {navItems.map(item => <button key={item.name} className={`nav-item ${tab === item.name ? 'active' : ''}`} onClick={() => { setTab(item.name); if (item.name === 'Notifications') markNotificationsRead(); if (item.name === 'Admin') loadReports(); }}>
+        {navItems.map(item => <button key={item.name} className={`nav-item ${tab === item.name ? 'active' : ''}`} onClick={() => { setTab(item.name); if (item.name === 'Admin') loadReports(); }}>
           <item.icon size={19}/><span>{item.name}</span>{item.count > 0 && <b className="nav-count">{item.count}</b>}
         </button>)}
       </nav>
@@ -421,7 +434,7 @@ function App() {
     </aside>
 
     <main className="main-area">
-      <header className="topbar"><div><span className="eyebrow">YOUR COMMUNITY</span><h1>{tab === 'Home' ? 'Your feed' : tab}</h1></div><div className="topbar-actions"><button className="icon-btn" title="Notifications" onClick={() => { setTab('Notifications'); markNotificationsRead(); }}><Bell size={19}/>{unread > 0 && <i/>}</button><button className="top-profile" onClick={() => setTab('Profile')}><Avatar profile={profile} size="sm"/></button></div></header>
+      <header className="topbar"><div><span className="eyebrow">YOUR COMMUNITY</span><h1>{tab === 'Home' ? 'Your feed' : tab}</h1></div><div className="topbar-actions"><button className="icon-btn" title="Notifications" onClick={() => setTab('Notifications')}><Bell size={19}/>{unread > 0 && <i/>}</button><button className="top-profile" onClick={() => setTab('Profile')}><Avatar profile={profile} size="sm"/></button></div></header>
       {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError('')}><X size={16}/></button></div>}
 
       {tab === 'Home' && <div className="content-grid">
@@ -464,7 +477,46 @@ function App() {
 
       {tab === 'Friends' && <section className="page-content"><div className="section-heading page-heading"><div><h2>Friend requests</h2><p>Say yes to a new connection.</p></div><span className="soft-tag">{requests.length} PENDING</span></div><div className="request-list">{requests.map(r => <div className="request-card card" key={r.id}><Avatar profile={r.sender}/><div className="request-person"><b>{r.sender?.display_name}</b><small>@{r.sender?.username} · {since(r.created_at)}</small></div><button className="btn btn-primary btn-small" onClick={() => respondRequest(r, 'accepted')}><Check size={14}/> Accept</button><button className="btn btn-soft btn-small" onClick={() => respondRequest(r, 'declined')}>Decline</button></div>)}</div>{!requests.length && <div className="empty-state card"><div className="empty-icon"><Users size={24}/></div><h3>All caught up</h3><p>Friend requests you receive will appear here.</p><button className="btn btn-primary" onClick={() => setTab('Explore')}>Find people</button></div>}</section>}
 
-      {tab === 'Notifications' && <section className="page-content"><div className="section-heading page-heading"><div><h2>All caught up, or almost</h2><p>Things happening around your circle.</p></div><button className="btn btn-outline btn-small" onClick={markNotificationsRead}><CheckCheck size={15}/> Mark all read</button></div><div className="notification-list card">{notifications.map(n => <div className={`notification-row ${!n.read_at ? 'unread' : ''}`} key={n.id}><Avatar profile={n.actor}/><div className="notification-copy"><p><b>{n.actor?.display_name || 'Someone'}</b> {notificationText(n.type)}</p><small>{since(n.created_at)} ago</small></div><span className="notification-icon">{n.type === 'like' ? <Heart size={16}/> : n.type === 'poke' ? <Zap size={16}/> : n.type === 'follow' ? <UserPlus size={16}/> : <Bell size={16}/>}</span></div>)}</div>{!notifications.length && <div className="empty-state"><Bell size={28}/><h3>No notifications yet</h3><p>We'll let you know when something happens.</p></div>}</section>}
+      {tab === 'Notifications' && <section className="page-content">
+        <div className="section-heading page-heading">
+          <div>
+            <h2>Your notifications</h2>
+            <p>{unread > 0 ? `You have ${unread} unread notification${unread === 1 ? '' : 's'}.` : 'You are all caught up.'}</p>
+          </div>
+          <button className="btn btn-outline btn-small" onClick={markNotificationsRead} disabled={unread === 0}>
+            <CheckCheck size={15}/> Mark all read
+          </button>
+        </div>
+        <div className="notification-filters">
+          <button className={notificationFilter === 'all' ? 'active' : ''} onClick={() => setNotificationFilter('all')}>
+            All ({notifications.length})
+          </button>
+          <button className={notificationFilter === 'unread' ? 'active' : ''} onClick={() => setNotificationFilter('unread')}>
+            Unread ({unread})
+          </button>
+          <button className="notification-refresh" onClick={loadNotifications}>Refresh</button>
+        </div>
+        <div className="notification-list card">
+          {notifications.filter(n => notificationFilter === 'all' || !n.read_at).map(n =>
+            <div className={`notification-row ${!n.read_at ? 'unread' : ''}`} key={n.id}>
+              <Avatar profile={n.actor}/>
+              <button className="notification-copy notification-open" onClick={() => { if (!n.read_at) markNotificationRead(n.id); }}>
+                <p><b>{n.actor?.display_name || 'Someone'}</b> {notificationText(n.type)}</p>
+                <small>{since(n.created_at)} ago</small>
+              </button>
+              <span className="notification-icon">{n.type === 'like' ? <Heart size={16}/> : n.type === 'poke' ? <Zap size={16}/> : n.type === 'follow' ? <UserPlus size={16}/> : <Bell size={16}/>}</span>
+              {!n.read_at && <button className="notification-read" title="Mark as read" aria-label="Mark notification as read" onClick={() => markNotificationRead(n.id)}><Check size={16}/></button>}
+            </div>
+          )}
+        </div>
+        {notifications.filter(n => notificationFilter === 'all' || !n.read_at).length === 0 &&
+          <div className="empty-state card">
+            <div className="empty-icon"><Bell size={24}/></div>
+            <h3>{notificationFilter === 'unread' ? 'You have no unread notifications' : 'No notifications yet'}</h3>
+            <p>When people interact with you on Raanbaai, their notifications will appear here.</p>
+          </div>
+        }
+      </section>}
 
       {tab === 'Messages' && <section className="page-content chat-page"><div className="chat-layout card"><aside className="chat-list"><div className="chat-list-head"><h3>Messages</h3><button className="icon-btn small" onClick={() => setTab('Explore')} title="Start a conversation"><Plus size={17}/></button></div>{chats.map(c => <button key={c.id} className={`chat-person ${activeChat?.id === c.id ? 'selected' : ''}`} onClick={async () => { setActiveChat(c); await loadMessages(c.id); }}><Avatar profile={c.person}/><span><b>{c.person?.display_name}</b><small>@{c.person?.username}</small></span></button>)}{!chats.length && <p className="muted chat-empty">No conversations yet. Find someone to message.</p>}</aside><section className="chat-window">{activeChat ? <><div className="chat-header"><Avatar profile={activeChat.person}/><span><b>{activeChat.person?.display_name}</b><small>@{activeChat.person?.username}</small></span></div><div className="message-list">{messages.map(m => <div key={m.id} className={`message-bubble ${m.sender_id === session.user.id ? 'mine' : ''}`}><p>{m.body}</p><small>{since(m.created_at)}</small></div>)}{!messages.length && <div className="chat-intro">Say hello to {activeChat.person?.display_name} 👋</div>}</div><form className="message-compose" onSubmit={sendMessage}><input value={messageText} onChange={e => setMessageText(e.target.value)} placeholder="Write a message…" maxLength="4000"/><button className="btn btn-primary btn-small" disabled={!messageText.trim()}><Send size={15}/></button></form></> : <div className="chat-placeholder"><div className="empty-icon"><MessageCircle size={24}/></div><h3>Your conversations</h3><p>Choose a chat or find someone new to message.</p><button className="btn btn-primary" onClick={() => setTab('Explore')}>Find people</button></div>}</section></div></section>}
 
@@ -475,7 +527,7 @@ function App() {
 
       {tab === 'Admin' && isAdmin && <section className="page-content"><div className="section-heading page-heading"><div><h2>Community moderation</h2><p>Review reports and keep Raanbaai welcoming.</p></div><span className="soft-tag"><Shield size={13}/> ADMIN</span></div><div className="admin-notice"><ShieldAlert size={18}/><span>Admin actions are protected by database policies. Review each report before taking action.</span></div><div className="admin-list card">{reports.map(r => <div className="report-row" key={r.id}><div className="report-top"><span className={`report-status ${r.status}`}>{r.status}</span><small>{since(r.created_at)} ago</small></div><h3>{r.target_type === 'post' ? 'Reported post' : 'Reported user'} {r.target_user?.username ? `· @${r.target_user.username}` : ''}</h3><p>{r.reason}</p><small>Reported by @{r.reporter?.username || 'unknown'}</small>{r.status === 'pending' && <div className="report-actions"><button className="btn btn-primary btn-small" onClick={() => resolveReport(r.id, 'resolved')}><Check size={14}/> Resolve</button><button className="btn btn-soft btn-small" onClick={() => resolveReport(r.id, 'dismissed')}>Dismiss</button>{r.target_type === 'post' && <button className="btn btn-danger btn-small" onClick={() => deletePost(r.target_id)}>Delete post</button>}</div>}</div>)}{!reports.length && <div className="empty-state"><Shield size={26}/><h3>No reports to review</h3><p>New reports will appear here.</p><button className="btn btn-outline btn-small" onClick={loadReports}>Refresh reports</button></div>}</div></section>}
 
-      <footer className="mobile-nav">{navItems.slice(0, 5).map(item => <button key={item.name} className={tab === item.name ? 'active' : ''} onClick={() => { setTab(item.name); if (item.name === 'Notifications') markNotificationsRead(); }}><item.icon size={20}/>{item.count > 0 && <i/>}</button>)}</footer>
+      <footer className="mobile-nav">{navItems.slice(0, 5).map(item => <button key={item.name} className={tab === item.name ? 'active' : ''} onClick={() => setTab(item.name)}><item.icon size={20}/>{item.count > 0 && <i/>}</button>)}</footer>
     </main>
     {toast && <div className="toast"><Check size={17}/>{toast}</div>}
   </div>;
