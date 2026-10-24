@@ -94,3 +94,30 @@ textarea:focus-visible {
 .welcome-card h2 span {
   color: #fff;
 }
+
+/* Final Raanbaai red-and-white colour override */
+.auth-art {
+  background: linear-gradient(145deg, #b91c1c, #e44848) !important;
+}
+
+.hero-copy h1 em {
+  color: #ffffff !important;
+}
+
+.brand-mark {
+  background: #c62828;
+}
+
+.avatar-stack span:first-child {
+  border-color: #c62828;
+}
+
+.btn-primary {
+  background: #c62828;
+  color: #ffffff;
+}
+
+.btn-primary:hover {
+  background: #a71919;
+}
+
